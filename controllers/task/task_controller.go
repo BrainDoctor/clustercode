@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -23,6 +24,7 @@ import (
 type (
 	// Reconciler reconciles Task objects
 	Reconciler struct {
+		Recorder record.EventRecorder
 		*pipeline.ResourceAction
 	}
 	// ReconciliationContext holds the parameters of a single reconciliation
@@ -30,7 +32,7 @@ type (
 		ctx       context.Context
 		task      *v1alpha1.Task
 		blueprint *v1alpha1.Blueprint
-		log       logr.Logger
+		Log       logr.Logger
 	}
 	TaskOpts struct {
 		Args              []string
@@ -48,6 +50,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, l logr.Logger) error {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}
+	r.Recorder = mgr.GetEventRecorderFor("task-controller")
 	pred, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{MatchLabels: controllers.ClusterCodeLabels})
 	if err != nil {
 		return err
@@ -64,26 +67,41 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, l logr.Logger) error {
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	rc := &ReconciliationContext{
-		ctx:  ctx,
-		task: &v1alpha1.Task{},
+		ctx: ctx,
+		task: &v1alpha1.Task{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      req.Name,
+				Namespace: req.Namespace,
+			},
+		},
+		Log: r.Log.WithValues("task", req.NamespacedName.String()),
 	}
-	err := r.Client.Get(ctx, req.NamespacedName, rc.task)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			r.Log.Info("object not found, ignoring reconcile", "object", req.NamespacedName)
-			return ctrl.Result{}, nil
-		}
-		r.Log.Error(err, "could not retrieve object", "object", req.NamespacedName)
-		return ctrl.Result{Requeue: true, RequeueAfter: time.Minute}, err
-	}
-	rc.log = r.Log.WithValues("task", req.NamespacedName)
 
-	if err := r.handleTask(rc); err != nil {
-		rc.log.Error(err, "could not reconcile task")
-		return ctrl.Result{}, err
+	splitJobPipeline := pipeline.NewPipeline(rc.Log).
+		WithSteps(
+			pipeline.NewStep("create split job", r.createSplitJob(rc)),
+		)
+
+	mergeJobPipeline := pipeline.NewPipeline(rc.Log).
+		WithSteps(
+			pipeline.NewStep("create merge job", r.createMergeJob(rc)),
+		)
+
+	result := pipeline.NewPipeline(rc.Log).
+		WithSteps(
+			pipeline.NewStep("get reconcile object", r.GetOrAbort(ctx, rc.task)),
+			splitJobPipeline.AsNestedStep("split-job", splitJobPredicate(rc)),
+			mergeJobPipeline.AsNestedStep("merge-job", mergeJobPredicate(rc)),
+		).Run()
+	if result.Err != nil {
+		r.Log.Error(result.Err, "pipeline failed with error")
 	}
-	rc.log.Info("reconciled task")
-	return ctrl.Result{}, nil
+
+	if result.Requeue {
+		return ctrl.Result{RequeueAfter: 1 * time.Minute}, result.Err
+	}
+	rc.Log.Info("reconciled task")
+	return ctrl.Result{}, result.Err
 }
 
 func (r *Reconciler) handleTask(rc *ReconciliationContext) error {
@@ -92,7 +110,6 @@ func (r *Reconciler) handleTask(rc *ReconciliationContext) error {
 	}
 
 	if len(rc.task.Status.SlicesFinished) >= rc.task.Spec.SlicesPlannedCount {
-		rc.log.Info("no more slices to schedule")
 		return r.createMergeJob(rc)
 	}
 	// Todo: Check condition whether more jobs are needed
@@ -100,7 +117,7 @@ func (r *Reconciler) handleTask(rc *ReconciliationContext) error {
 	if nextSliceIndex < 0 {
 		return nil
 	} else {
-		rc.log.Info("scheduling next slice", "index", nextSliceIndex)
+		rc.Log.Info("scheduling next slice", "index", nextSliceIndex)
 		return r.createSliceJob(rc, nextSliceIndex)
 	}
 }
@@ -110,7 +127,7 @@ func (r *Reconciler) determineNextSliceIndex(rc *ReconciliationContext) int {
 	if rc.task.Spec.ConcurrencyStrategy.ConcurrentCountStrategy != nil {
 		maxCount := rc.task.Spec.ConcurrencyStrategy.ConcurrentCountStrategy.MaxCount
 		if len(status.SlicesScheduled) >= maxCount {
-			rc.log.V(1).Info("reached concurrent max count, cannot schedule more", "max", maxCount)
+			rc.Log.V(1).Info("reached concurrent max count, cannot schedule more", "max", maxCount)
 			return -1
 		}
 	}
@@ -150,16 +167,16 @@ func (r *Reconciler) createSplitJob(rc *ReconciliationContext) error {
 		MountIntermediate: true,
 	})
 	if err := controllerutil.SetControllerReference(rc.task, job.GetObjectMeta(), r.Scheme); err != nil {
-		rc.log.Info("could not set controller reference, deleting the task won't delete the job", "err", err.Error())
+		rc.Log.Info("could not set controller reference, deleting the task won't delete the job", "err", err.Error())
 	}
 	if err := r.Client.Create(rc.ctx, job); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			rc.log.Info("skip creating job, it already exists", "job", job.Name)
+			rc.Log.Info("skip creating job, it already exists", "job", job.Name)
 		} else {
-			rc.log.Error(err, "could not create job", "job", job.Name)
+			rc.Log.Error(err, "could not create job", "job", job.Name)
 		}
 	} else {
-		rc.log.Info("job created", "job", job.Name)
+		rc.Log.Info("job created", "job", job.Name)
 	}
 	return nil
 }
@@ -182,12 +199,12 @@ func (r *Reconciler) createSliceJob(rc *ReconciliationContext, index int) error 
 	}
 	if err := r.Client.Create(rc.ctx, job); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			rc.log.Info("skip creating job, it already exists", "job", job.Name)
+			rc.Log.Info("skip creating job, it already exists", "job", job.Name)
 		} else {
-			rc.log.Error(err, "could not create job", "job", job.Name)
+			rc.Log.Error(err, "could not create job", "job", job.Name)
 		}
 	} else {
-		rc.log.Info("job created", "job", job.Name)
+		rc.Log.Info("job created", "job", job.Name)
 	}
 	rc.task.Status.SlicesScheduled = append(rc.task.Status.SlicesScheduled, v1alpha1.ClustercodeSliceRef{
 		JobName:    job.Name,
@@ -215,12 +232,12 @@ func (r *Reconciler) createMergeJob(rc *ReconciliationContext) error {
 	}
 	if err := r.Client.Create(rc.ctx, job); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			rc.log.Info("skip creating job, it already exists", "job", job.Name)
+			rc.Log.Info("skip creating job, it already exists", "job", job.Name)
 		} else {
-			rc.log.Error(err, "could not create job", "job", job.Name)
+			rc.Log.Error(err, "could not create job", "job", job.Name)
 		}
 	} else {
-		rc.log.Info("job created", "job", job.Name)
+		rc.Log.Info("job created", "job", job.Name)
 	}
 	return nil
 }

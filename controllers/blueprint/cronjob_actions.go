@@ -60,14 +60,14 @@ func (r *Reconciler) CreateCronJobAction(rc *ReconciliationContext) pipeline.Act
 			WithLabels(controllers.ClusterCodeLabels, controllers.ClustercodeTypeScan.AsLabels()).
 			WithName(rc.blueprint.Name+"-scan-job").
 			WithNamespace(rc.blueprint.Namespace).
-			WithControllerReference(rc.blueprint, rc.Scheme).
+			WithControllerReference(rc.blueprint, r.Scheme).
 			Build()
 
 		if err, op := r.UpsertResource(rc.ctx, cronJob); err != nil {
-			rc.Recorder.Eventf(rc.blueprint, corev1.EventTypeWarning, "FailedCronJob", "CronJob '%s' could not be created: %v", cronJob.Name, err)
+			r.Recorder.Eventf(rc.blueprint, corev1.EventTypeWarning, "FailedCronJob", "CronJob '%s' could not be created: %v", cronJob.Name, err)
 			return pipeline.Result{Err: err, Requeue: true}
 		} else if op == pipeline.ResourceCreated {
-			rc.Recorder.Eventf(rc.blueprint, corev1.EventTypeNormal, "CreatedCronJob", "CronJob '%s' created", cronJob.Name)
+			r.Recorder.Eventf(rc.blueprint, corev1.EventTypeNormal, "CreatedCronJob", "CronJob '%s' created", cronJob.Name)
 		}
 		return pipeline.Result{}
 	}

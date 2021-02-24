@@ -13,6 +13,7 @@ import (
 	"github.com/ccremer/clustercode/builder"
 	"github.com/ccremer/clustercode/cfg"
 	"github.com/ccremer/clustercode/controllers"
+	"github.com/ccremer/clustercode/controllers/pipeline"
 )
 
 func MergeArgsAndReplaceVariables(variables map[string]string, argsList ...[]string) (merged []string) {
@@ -25,6 +26,18 @@ func MergeArgsAndReplaceVariables(variables map[string]string, argsList ...[]str
 		}
 	}
 	return merged
+}
+
+func splitJobPredicate(rc *ReconciliationContext) pipeline.Predicate {
+	return func(step pipeline.Step) bool {
+		return rc.task.Spec.SlicesPlannedCount == 0
+	}
+}
+
+func mergeJobPredicate(rc *ReconciliationContext) pipeline.Predicate {
+	return func(step pipeline.Step) bool {
+		return len(rc.task.Status.SlicesFinished) >= rc.task.Spec.SlicesPlannedCount
+	}
 }
 
 func CreateFfmpegJobDefinition(task *v1alpha1.Task, opts *TaskOpts) *v1.Job {

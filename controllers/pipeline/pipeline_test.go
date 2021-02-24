@@ -79,16 +79,31 @@ func TestPipeline_runPipeline(t *testing.T) {
 			expectedCalls:  2,
 			expectedResult: Result{Abort: true},
 		},
+		"GivenNestedPipeline_WhenParentPipelineRuns_ThenRunNestedAsWell": {
+			givenSteps: []Step{
+				NewStep("test-step", func() Result {
+					callCount += 1
+					return Result{}
+				}),
+				NewPipeline(zapr.NewLogger(zaptest.NewLogger(t))).
+					WithSteps(NewStep("nested-step", func() Result {
+						callCount += 1
+						return Result{}
+					})).AsNestedStep("nested-pipeline", TruePredicate()),
+			},
+			expectedCalls:  2,
+			expectedResult: Result{},
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			callCount = 0
 			p := &Pipeline{
-				Log:          zapr.NewLogger(zaptest.NewLogger(t)),
+				log:          zapr.NewLogger(zaptest.NewLogger(t)),
 				steps:        tt.givenSteps,
 				abortHandler: tt.givenAbortHandler,
 			}
-			actualResult := p.runPipeline()
+			actualResult := p.Run()
 			assert.Equal(t, tt.expectedResult, actualResult)
 			assert.Equal(t, tt.expectedCalls, callCount)
 		})

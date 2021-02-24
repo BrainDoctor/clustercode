@@ -1,16 +1,16 @@
 package pipeline
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type (
 	Pipeline struct {
-		Log          logr.Logger
+		log          logr.Logger
 		steps        []Step
 		abortHandler Handler
 	}
@@ -30,7 +30,7 @@ type (
 )
 
 func NewPipeline(log logr.Logger) *Pipeline {
-	return &Pipeline{Log: log}
+	return &Pipeline{log: log}
 }
 
 func (p *Pipeline) AddStep(step Step) *Pipeline {
@@ -50,8 +50,10 @@ func (p *Pipeline) WithAbortHandler(handler Handler) *Pipeline {
 
 func (p *Pipeline) AsNestedStep(name string, predicate Predicate) Step {
 	return NewStepWithPredicate(name, func() Result {
-		p.Log = p.Log.WithValues("nestedPipeline", name)
-		return p.runPipeline()
+		nested := NewPipeline(p.log.WithValues("nestedPipeline", name))
+		nested.steps = p.steps
+		nested.abortHandler = p.abortHandler
+		return nested.runPipeline()
 	}, predicate)
 }
 
@@ -61,26 +63,25 @@ func (r Result) IsSuccessful() bool {
 
 func (p *Pipeline) Run() Result {
 	result := p.runPipeline()
-	p.Log.V(1).Info("executed pipeline", "stepsCompleted", len(p.steps))
+	p.log.V(1).Info("executed pipeline")
 	return result
 }
 
 func (p *Pipeline) runPipeline() Result {
 	for _, step := range p.steps {
-
 		if step.P != nil && !step.P(step) {
-			p.Log.V(1).Info("ignoring step", "name", step.Name)
+			p.log.V(1).Info("ignoring step", "name", step.Name)
 			continue
 		}
 
-		p.Log.V(1).Info("executing step", "name", step.Name)
+		p.log.V(1).Info("executing step", "name", step.Name)
 
 		if r := step.F(); r.Abort || r.Err != nil {
 			if p.abortHandler != nil {
 				p.abortHandler(r)
 			}
 			if r.Err == nil {
-				p.Log.V(1).Info("aborting pipeline", "step", step.Name)
+				p.log.V(1).Info("aborting pipeline", "step", step.Name)
 				return Result{Requeue: r.Requeue, Abort: r.Abort}
 			}
 
@@ -111,16 +112,9 @@ func Abort() ActionFunc {
 	}
 }
 
-type UpdateStatusHandler struct {
-	Log     logr.Logger
-	Object  client.Object
-	Context context.Context
-	Client  client.Client
-}
-
-func (a UpdateStatusHandler) UpdateStatus(result Result) {
-	if err := a.Client.Status().Update(a.Context, a.Object); err != nil {
-		a.Log.Error(err, "could not update status")
+func MapToNamespacedName(object client.Object) types.NamespacedName {
+	return types.NamespacedName{
+		Namespace: object.GetNamespace(),
+		Name:      object.GetName(),
 	}
-	a.Log.V(1).Info("updated status")
 }

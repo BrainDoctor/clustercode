@@ -16,9 +16,9 @@ func (r *Reconciler) CreateServiceAccountAction(rc *ReconciliationContext) pipel
 		rc.serviceAccount = r.newServiceAccount(rc)
 		err, op := r.CreateIfNotExisting(rc.ctx, rc.serviceAccount)
 		if err != nil {
-			rc.Recorder.Eventf(rc.blueprint, corev1.EventTypeWarning, "FailedServiceAccountCreation", "ServiceAccount '%' could not be created: %v", rc.serviceAccount.Name, err)
+			r.Recorder.Eventf(rc.blueprint, corev1.EventTypeWarning, "FailedServiceAccountCreation", "ServiceAccount '%' could not be created: %v", rc.serviceAccount.Name, err)
 		} else if op == pipeline.ResourceCreated {
-			rc.Recorder.Eventf(rc.blueprint, corev1.EventTypeNormal, "ServiceAccountCreated", "ServiceAccount '%s' created", rc.serviceAccount.Name)
+			r.Recorder.Eventf(rc.blueprint, corev1.EventTypeNormal, "ServiceAccountCreated", "ServiceAccount '%s' created", rc.serviceAccount.Name)
 		}
 		return pipeline.Result{Err: err}
 	}
@@ -29,9 +29,9 @@ func (r *Reconciler) CreateRoleBindingAction(rc *ReconciliationContext) pipeline
 		binding := r.newRoleBinding(rc)
 		err, op := r.CreateIfNotExisting(rc.ctx, binding)
 		if err != nil {
-			rc.Recorder.Eventf(rc.blueprint, corev1.EventTypeWarning, "FailedRoleBindingCreation", "RoleBinding '%' could not be created: %v", binding.Name, err)
+			r.Recorder.Eventf(rc.blueprint, corev1.EventTypeWarning, "FailedRoleBindingCreation", "RoleBinding '%' could not be created: %v", binding.Name, err)
 		} else if op == pipeline.ResourceCreated {
-			rc.Recorder.Eventf(rc.blueprint, corev1.EventTypeNormal, "RoleBindingCreated", "RoleBinding '%s' created", binding.Name)
+			r.Recorder.Eventf(rc.blueprint, corev1.EventTypeNormal, "RoleBindingCreated", "RoleBinding '%s' created", binding.Name)
 		}
 		return pipeline.Result{Err: err}
 	}
@@ -44,7 +44,7 @@ func (r *Reconciler) newServiceAccount(rc *ReconciliationContext) *corev1.Servic
 		WithName(saName).
 		WithNamespace(rc.blueprint.Namespace).
 		WithLabels(controllers.ClusterCodeLabels).
-		WithControllerReference(rc.blueprint, rc.Scheme)
+		WithControllerReference(rc.blueprint, r.Scheme)
 	return account
 }
 

@@ -7,10 +7,8 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/ccremer/clustercode/api/v1alpha1"
@@ -29,9 +27,6 @@ type (
 		blueprint      *v1alpha1.Blueprint
 		serviceAccount *corev1.ServiceAccount
 		Log            logr.Logger
-		Scheme         *runtime.Scheme
-		Client         client.Client
-		Recorder       record.EventRecorder
 	}
 )
 
@@ -65,19 +60,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 				Namespace: req.Namespace,
 			},
 		},
-		Log:      r.Log.WithValues("blueprint", req.NamespacedName),
-		Client:   r.Client,
-		Scheme:   r.Scheme,
-		Recorder: r.Recorder,
+		Log: r.Log.WithValues("blueprint", req.NamespacedName),
 	}
 
 	result := pipeline.NewPipeline(rc.Log).
-		WithAbortHandler(pipeline.UpdateStatusHandler{
-			Log:     rc.Log,
-			Object:  rc.blueprint,
-			Context: rc.ctx,
-			Client:  rc.Client,
-		}.UpdateStatus).
+		WithAbortHandler(r.ResourceAction.UpdateStatusHandler(ctx, rc.blueprint)).
 		WithSteps(
 			pipeline.NewStep("get reconcile object", r.GetOrAbort(rc.ctx, rc.blueprint)),
 			pipeline.NewStepWithPredicate("abort if deleted", pipeline.Abort(), pipeline.DeletedPredicate(rc.blueprint)),
