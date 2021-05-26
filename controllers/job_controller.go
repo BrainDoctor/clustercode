@@ -17,12 +17,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/pointer"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
+	clientbuilder "sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/ccremer/clustercode/api/v1alpha1"
+	"github.com/ccremer/clustercode/builder"
 	"github.com/ccremer/clustercode/cfg"
 )
 
@@ -43,13 +44,26 @@ type (
 	}
 )
 
-func (r *JobReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *JobReconciler) SetupWithManager(mgr ctrl.Manager, l logr.Logger) error {
+	if uncached, err := client.NewDelegatingClient(client.NewDelegatingClientInput{
+		CacheReader: mgr.GetClient(),
+		Client:      mgr.GetClient(),
+		UncachedObjects: []client.Object{
+			&batchv1.Job{},
+		},
+	}); err != nil {
+		return err
+	} else {
+		r.Client = uncached
+	}
+	r.Scheme = mgr.GetScheme()
+	r.Log = l
 	pred, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{MatchLabels: ClusterCodeLabels})
 	if err != nil {
 		return err
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&batchv1.Job{}, builder.WithPredicates(pred)).
+		For(&batchv1.Job{}, clientbuilder.WithPredicates(pred)).
 		Complete(r)
 }
 
@@ -145,49 +159,33 @@ func (r *JobReconciler) handleSliceJob(rc *JobContext) error {
 func (r *JobReconciler) createCountJob(rc *JobContext) error {
 
 	taskId := rc.task.Spec.TaskId
-	intermediateMountRoot := filepath.Join("/clustercode", IntermediateSubMountPath)
+	cb := builder.NewContainerBuilder("clustercode").
+		WithImage(cfg.Config.Operator.ClustercodeContainerImage).
+		WithArgs("-v").
+		AddArgs("--namespace=%s", rc.job.Namespace).
+		AddArgs("count").
+		AddArgs("--count.task-name=%s", rc.task.Name).
+		Build()
+
+	pb := builder.NewPodSpecBuilder(cb).Build()
+	pvc := rc.task.Spec.Storage.IntermediatePvc
+	pb.AddPvcMount(nil, IntermediateSubMountPath, pvc.ClaimName, filepath.Join("/clustercode", IntermediateSubMountPath), pvc.SubPath)
+	pb.PodSpec.ServiceAccountName = rc.job.Spec.Template.Spec.ServiceAccountName
+	pb.PodSpec.RestartPolicy = corev1.RestartPolicyNever
+
 	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%.*s-%s", 62-len(ClustercodeTypeCount), taskId, ClustercodeTypeCount),
-			Namespace: rc.job.Namespace,
-			Labels:    labels.Merge(ClusterCodeLabels, labels.Merge(ClustercodeTypeCount.AsLabels(), taskId.AsLabels())),
-		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit: pointer.Int32Ptr(0),
 			Template: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					ServiceAccountName: rc.job.Spec.Template.Spec.ServiceAccountName,
-					RestartPolicy:      corev1.RestartPolicyNever,
-					Containers: []corev1.Container{
-						{
-							Name:            "clustercode",
-							Image:           cfg.Config.Operator.ClustercodeContainerImage,
-							ImagePullPolicy: corev1.PullIfNotPresent,
-							Args: []string{
-								"-v",
-								"count",
-								"--count.task-name=" + rc.task.Name,
-								"--namespace=" + rc.job.Namespace,
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{Name: IntermediateSubMountPath, MountPath: intermediateMountRoot, SubPath: rc.task.Spec.Storage.IntermediatePvc.SubPath},
-							},
-						},
-					},
-					Volumes: []corev1.Volume{
-						{
-							Name: IntermediateSubMountPath,
-							VolumeSource: corev1.VolumeSource{
-								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-									ClaimName: rc.task.Spec.Storage.IntermediatePvc.ClaimName,
-								},
-							},
-						},
-					},
-				},
+				Spec: *pb.PodSpec,
 			},
 		},
 	}
+	builder.NewMetaBuilderWith(job).
+		WithNamespace(rc.job.Namespace).
+		WithName(fmt.Sprintf("%.*s-%s", 62-len(ClustercodeTypeCount), taskId, ClustercodeTypeCount)).
+		WithLabels(ClusterCodeLabels, ClustercodeTypeCount.AsLabels(), taskId.AsLabels())
+
 	if err := controllerutil.SetControllerReference(rc.task, job.GetObjectMeta(), r.Scheme); err != nil {
 		rc.log.Info("could not set controller reference, deleting the task won't delete the job", "err", err.Error())
 	}
@@ -216,6 +214,25 @@ func (r *JobReconciler) handleMergeJob(rc *JobContext) error {
 func (r *JobReconciler) createCleanupJob(rc *JobContext) error {
 
 	taskId := rc.task.Spec.TaskId
+	cb := builder.NewContainerBuilder("clustercode").
+		WithImage(cfg.Config.Operator.ClustercodeContainerImage).
+		WithImagePullPolicy(corev1.PullIfNotPresent).
+		WithArgs("-v").
+		AddArgs("--namespace=%s", rc.job.Namespace).
+		AddArg("cleanup").
+		AddArgs("--cleanup.task-name=%s", rc.task.Name).
+		Build()
+
+	pb := builder.NewPodSpecBuilder(cb)
+	pb.AddPvcMount(nil, SourceSubMountPath, rc.task.Spec.Storage.SourcePvc.ClaimName, filepath.Join("/clustercode", SourceSubMountPath), rc.task.Spec.Storage.SourcePvc.SubPath)
+	pb.AddPvcMount(nil, IntermediateSubMountPath, rc.task.Spec.Storage.IntermediatePvc.ClaimName, filepath.Join("/clustercode", IntermediateSubMountPath), rc.task.Spec.Storage.IntermediatePvc.SubPath)
+	pb.PodSpec.ServiceAccountName = rc.job.Spec.Template.Spec.ServiceAccountName
+	pb.PodSpec.SecurityContext = &corev1.PodSecurityContext{
+		RunAsUser:  pointer.Int64Ptr(1000),
+		RunAsGroup: pointer.Int64Ptr(0),
+		FSGroup:    pointer.Int64Ptr(0),
+	}
+	pb.PodSpec.RestartPolicy = corev1.RestartPolicyNever
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%.*s-%s", 62-len(ClustercodeTypeCleanup), taskId, ClustercodeTypeCleanup),
@@ -225,33 +242,10 @@ func (r *JobReconciler) createCleanupJob(rc *JobContext) error {
 		Spec: batchv1.JobSpec{
 			BackoffLimit: pointer.Int32Ptr(0),
 			Template: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsUser:  pointer.Int64Ptr(1000),
-						RunAsGroup: pointer.Int64Ptr(0),
-						FSGroup:    pointer.Int64Ptr(0),
-					},
-					ServiceAccountName: rc.job.Spec.Template.Spec.ServiceAccountName,
-					RestartPolicy:      corev1.RestartPolicyNever,
-					Containers: []corev1.Container{
-						{
-							Name:            "clustercode",
-							Image:           cfg.Config.Operator.ClustercodeContainerImage,
-							ImagePullPolicy: corev1.PullIfNotPresent,
-							Args: []string{
-								"-v",
-								"--namespace=" + rc.job.Namespace,
-								"cleanup",
-								"--cleanup.task-name=" + rc.task.Name,
-							},
-						},
-					},
-				},
+				Spec: *pb.Build().PodSpec,
 			},
 		},
 	}
-	addPvcVolume(job, SourceSubMountPath, filepath.Join("/clustercode", SourceSubMountPath), rc.task.Spec.Storage.SourcePvc)
-	addPvcVolume(job, IntermediateSubMountPath, filepath.Join("/clustercode", IntermediateSubMountPath), rc.task.Spec.Storage.IntermediatePvc)
 	if err := controllerutil.SetControllerReference(rc.task, job.GetObjectMeta(), r.Scheme); err != nil {
 		rc.log.Info("could not set controller reference, deleting the task won't delete the job", "err", err.Error())
 	}

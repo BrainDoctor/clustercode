@@ -4,12 +4,12 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-	batchv1 "k8s.io/api/batch/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
-	controllerclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/ccremer/clustercode/cfg"
 	"github.com/ccremer/clustercode/controllers"
+	"github.com/ccremer/clustercode/controllers/blueprint"
+	"github.com/ccremer/clustercode/controllers/task"
 )
 
 // operateCmd represents the operate command
@@ -50,37 +50,14 @@ func startOperator(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("unable to start operator: %w", err)
 	}
-
-	uncached, err := controllerclient.NewDelegatingClient(controllerclient.NewDelegatingClientInput{
-		CacheReader: mgr.GetClient(),
-		Client:      mgr.GetClient(),
-		UncachedObjects: []controllerclient.Object{
-			&batchv1.Job{},
-		},
-	})
-	if err != nil {
-		return err
-	}
-	if err = (&controllers.BlueprintReconciler{
-		Client: mgr.GetClient(),
-		Log:    ctrl.Log.WithName("controllers").WithName("blueprint"),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create controller '%s': %w", "blueprint", err)
-	}
-	if err = (&controllers.TaskReconciler{
-		Client: mgr.GetClient(),
-		Log:    ctrl.Log.WithName("controllers").WithName("task"),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create controller '%s': %w", "task", err)
-	}
-	if err = (&controllers.JobReconciler{
-		Client: uncached,
-		Log:    ctrl.Log.WithName("controllers").WithName("job"),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create controller '%s': %w", "job", err)
+	for name, reconciler := range map[string]controllers.ReconcilerSetup{
+		"blueprint": &blueprint.Reconciler{},
+		"task":      &task.Reconciler{},
+		"job":       &controllers.JobReconciler{},
+	} {
+		if err := reconciler.SetupWithManager(mgr, ctrl.Log.WithName("controllers").WithName(name)); err != nil {
+			return fmt.Errorf("unable to create controller '%s': %w", name, err)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

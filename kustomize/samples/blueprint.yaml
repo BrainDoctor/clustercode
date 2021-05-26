@@ -1,0 +1,58 @@
+apiVersion: clustercode.github.io/v1alpha1
+kind: Blueprint
+metadata:
+  name: test-blueprint
+spec:
+  scanSchedule: "*/1 * * * *"
+  storage:
+    sourcePvc:
+      claimName: test1-source
+      subPath: source
+    intermediatePvc:
+      claimName: test1-intermediate
+      subPath: intermediate
+    targetPvc:
+      claimName: test1-target
+      subPath: target
+  scanSpec:
+    mediaFileExtensions:
+      - mp4
+  taskConcurrencyStrategy:
+    concurrentCountStrategy:
+      maxCount: 1
+  encodeSpec:
+    sliceSize: 1
+    defaultCommandArgs:
+      - -y
+      - -hide_banner
+      - -nostats
+    splitCommandArgs:
+      - -i
+      - ${INPUT}
+      - -c
+      - copy
+      - -map
+      - "0"
+      - -segment_time
+      - ${SLICE_SIZE}
+      - -f
+      - segment
+      - ${OUTPUT}
+    transcodeCommandArgs:
+      - -i
+      - ${INPUT}
+      - -c:v
+      - copy
+      - -c:a
+      - copy
+      - ${OUTPUT}
+    mergeCommandArgs:
+      - -f
+      - concat
+      - -safe
+      - "0"
+      - -i
+      - ${INPUT}
+      - -c
+      - copy
+      - ${OUTPUT}

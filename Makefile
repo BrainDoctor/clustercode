@@ -35,6 +35,7 @@ build: generate fmt vet $(BIN_FILENAME) ## Build manager binary
 
 .PHONY: run
 run: export CC_OPERATOR__ENABLE_LEADER_ELECTION = $(ENABLE_LEADER_ELECTION)
+run: export CC_OPERATOR__CLUSTERCODE_IMAGE = $(E2E_IMG)
 run: fmt vet ## Run against the configured Kubernetes cluster in ~/.kube/config
 	go run ./main.go -v operate
 
@@ -125,7 +126,7 @@ kind-e2e-image: docker-build
 .PHONY: kind-run
 kind-run: export KUBECONFIG = $(KIND_KUBECONFIG)
 kind-run: export E2E_TAG = master
-kind-run: kind-e2e-image install run ## Runs the operator on the local host but configured for the kind cluster
+kind-run: run ## Runs the operator on the local host but configured for the kind cluster
 
 .PHONY: kind-deploy
 kind-deploy: export KUBECONFIG = $(KIND_KUBECONFIG)

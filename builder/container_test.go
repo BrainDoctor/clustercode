@@ -1,103 +1,126 @@
 package builder
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 )
 
-func Test_ContainerBuilder_Constructor(t *testing.T) {
-	name := "test"
-	b := NewContainerBuilder(name)
-
-	result := b.Container
-	assert.Equal(t, name, result.Name)
+func Test_ContainerBuilder_WithName(t *testing.T) {
+	container := &corev1.Container{
+		Name: "name",
+	}
+	builder := NewContainerBuilder("name")
+	assert.Equal(t, container, builder.Container)
 }
 
-func Test_ContainerBuilder_MultipleBuilds(t *testing.T) {
-	name := "test"
-	b := NewContainerBuilder(name)
-
-	result := b.Build(WithContainerImage(name)).Build(AddArg(name)).Container
-	assert.Equal(t, name, result.Name)
-	assert.Equal(t, name, result.Image)
-	assert.Equal(t, name, result.Args[0])
+func Test_ContainerBuilder_WithImage(t *testing.T) {
+	container := &corev1.Container{
+		Name:  "name",
+		Image: "image",
+	}
+	builder := NewContainerBuilder("name").WithImage("image")
+	assert.Equal(t, container, builder.Container)
 }
 
-func Test_ContainerBuilder_Properties(t *testing.T) {
-	genericKey := "genericKey"
-	genericValue := "genericValue"
-	tests := map[string]struct {
-		given    *corev1.Container
-		property ContainerProperty
-		expected *corev1.Container
-	}{
-		"WithContainerImage": {
-			property: WithContainerImage(genericValue),
-			expected: &corev1.Container{Image: genericValue},
+func Test_ContainerBuilder_WithImagePullPolicy(t *testing.T) {
+	container := &corev1.Container{
+		Name:            "name",
+		ImagePullPolicy: corev1.PullIfNotPresent,
+	}
+	builder := NewContainerBuilder("name").WithImagePullPolicy(corev1.PullIfNotPresent)
+	assert.Equal(t, container, builder.Container)
+}
+
+func Test_ContainerBuilder_WithArgs(t *testing.T) {
+	container := &corev1.Container{
+		Name: "name",
+		Args: []string{"args1", "arg2"},
+	}
+	builder := NewContainerBuilder("name").WithArgs("args1", "arg2")
+	assert.Equal(t, container, builder.Container)
+}
+
+func Test_ContainerBuilder_AddArg(t *testing.T) {
+	container := &corev1.Container{
+		Name: "name",
+		Args: []string{fmt.Sprintf("arg%d", 2)},
+	}
+	builder := NewContainerBuilder("name").AddArg("arg%d", 2)
+	assert.Equal(t, container, builder.Container)
+}
+
+func Test_ContainerBuilder_AddArgs(t *testing.T) {
+	container := &corev1.Container{
+		Name: "name",
+		Args: []string{"arg1"},
+	}
+	container.Args = append(container.Args, "arg2")
+	builder := NewContainerBuilder("name").WithArgs("arg1").AddArgs("arg2")
+	assert.Equal(t, container, builder.Container)
+}
+
+func Test_ContainerBuilder_AddEnvVarValue(t *testing.T) {
+	container := &corev1.Container{
+		Name: "name",
+		Env: []corev1.EnvVar{
+			{
+				Name:  "key",
+				Value: "value",
+			},
 		},
-		"WithContainerName": {
-			property: WithContainerName(genericKey),
-			expected: &corev1.Container{Name: genericKey},
+	}
+	builder := NewContainerBuilder("name").AddEnvVarValue("key", "value")
+	assert.Equal(t, container, builder.Container)
+}
+
+func Test_ContainerBuilder_AddEnvValueFromConfigMap(t *testing.T) {
+	container := &corev1.Container{
+		Name: "name",
+		Env: []corev1.EnvVar{
+			{
+				Name: "key",
+				ValueFrom: &corev1.EnvVarSource{
+					ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "configmap"},
+						Key:                  "key",
+					}},
+			},
 		},
-		"AddVolumeMount": {
-			property: AddVolumeMount{Name: genericKey, MountPath: genericValue},
-			expected: &corev1.Container{VolumeMounts: []corev1.VolumeMount{
-				{
-					Name:      genericKey,
-					MountPath: genericValue,
+	}
+	builder := NewContainerBuilder("name").AddEnvValueFromConfigMap("configmap", "key")
+	assert.Equal(t, container, builder.Container)
+}
+
+func Test_ContainerBuilder_AddEnvFromConfigMap(t *testing.T) {
+	container := &corev1.Container{
+		Name: "name",
+		EnvFrom: []corev1.EnvFromSource{
+			{
+				Prefix: "prefix",
+				ConfigMapRef: &corev1.ConfigMapEnvSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "configmap"},
 				},
-			}},
-		},
-		"AddArg": {
-			property: AddArg(genericValue),
-			expected: &corev1.Container{Args: []string{genericValue}},
-		},
-		"AddArgs": {
-			given: &corev1.Container{
-				Args: []string{genericKey},
-			},
-			property: AddArgs{genericValue},
-			expected: &corev1.Container{Args: []string{genericKey, genericValue}},
-		},
-		"WithArgs": {
-			given: &corev1.Container{
-				Args: []string{genericKey},
-			},
-			property: WithArgs{genericValue},
-			expected: &corev1.Container{Args: []string{genericValue}},
-		},
-		"AddEnvVarValue": {
-			property: AddEnvVarValue{genericKey, genericValue},
-			expected: &corev1.Container{Env: []corev1.EnvVar{{Name: genericKey, Value: genericValue}}},
-		},
-		"AddEnvValueFromConfigMap": {
-			property: AddEnvValueFromConfigMap{"cm", genericValue},
-			expected: &corev1.Container{Env: []corev1.EnvVar{{Name: genericValue, ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "cm"},
-					Key:                  genericValue,
-				}}}},
-			},
-		},
-		"AddEnvFromConfigMap": {
-			property: AddEnvFromConfigMap{genericKey, genericValue},
-			expected: &corev1.Container{EnvFrom: []corev1.EnvFromSource{
-				{
-					Prefix: genericValue, ConfigMapRef: &corev1.ConfigMapEnvSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: genericKey},
-					}}},
 			},
 		},
 	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			if tt.given == nil {
-				tt.given = &corev1.Container{}
-			}
-			result := NewContainerBuilderWith(tt.given).Build(tt.property).Container
-			assert.Equal(t, tt.expected, result)
-		})
+	builder := NewContainerBuilder("name").AddEnvFromConfigMap("configmap", "prefix")
+	assert.Equal(t, container, builder.Container)
+}
+
+func Test_ContainerBuilder_AddMountPath(t *testing.T) {
+	container := &corev1.Container{
+		Name: "name",
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "volume",
+				MountPath: "mountPath",
+				SubPath:   "subPath",
+			},
+		},
 	}
+	builder := NewContainerBuilder("name").AddMountPath("volume", "mountPath", "subPath")
+	assert.Equal(t, container, builder.Container)
 }

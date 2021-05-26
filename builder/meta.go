@@ -3,7 +3,10 @@ package builder
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 type (
@@ -12,22 +15,16 @@ type (
 	}
 
 	MetaBuilder struct {
-		ObjectMeta metav1.Object
+		Object metav1.Object
 	}
-
-	WithName           string
-	WithNamespace      string
-	WithNamespacedName types.NamespacedName
-	WithLabels         labels.Set
-	AddLabel           KeyValueTuple
 )
 
-func NewMetaBuilder() MetaBuilder {
+func NewMetaBuilder() *MetaBuilder {
 	return NewMetaBuilderWith(&metav1.ObjectMeta{})
 }
 
-func NewMetaBuilderWith(obj metav1.Object) MetaBuilder {
-	return MetaBuilder{ObjectMeta: obj}
+func NewMetaBuilderWith(obj metav1.Object) *MetaBuilder {
+	return &MetaBuilder{Object: obj}
 }
 
 func (b MetaBuilder) Build(props ...MetaProperty) MetaBuilder {
@@ -37,27 +34,51 @@ func (b MetaBuilder) Build(props ...MetaProperty) MetaBuilder {
 	return b
 }
 
-func (w WithName) Apply(b *MetaBuilder) {
-	b.ObjectMeta.SetName(string(w))
+func (b *MetaBuilder) WithNamespace(ns string) *MetaBuilder {
+	b.Object.SetNamespace(ns)
+	return b
 }
 
-func (w WithNamespace) Apply(b *MetaBuilder) {
-	b.ObjectMeta.SetNamespace(string(w))
+func (b *MetaBuilder) WithName(name string) *MetaBuilder {
+	b.Object.SetName(name)
+	return b
 }
 
-func (w WithNamespacedName) Apply(b *MetaBuilder) {
-	b.ObjectMeta.SetNamespace(w.Namespace)
-	b.ObjectMeta.SetName(w.Name)
+func (b *MetaBuilder) WithNamespacedName(nsd types.NamespacedName) *MetaBuilder {
+	b.Object.SetName(nsd.Name)
+	b.Object.SetNamespace(nsd.Namespace)
+	return b
 }
 
-func (w AddLabel) Apply(b *MetaBuilder) {
-	l := b.ObjectMeta.GetLabels()
+func (b *MetaBuilder) WithControllerReference(owner client.Object, scheme *runtime.Scheme) *MetaBuilder {
+	_ = controllerutil.SetControllerReference(owner, b.Object, scheme)
+	return b
+}
+
+func (b *MetaBuilder) WithLabels(sets ...labels.Set) *MetaBuilder {
+	s := labels.Set{}
+	for _, set := range sets {
+		s = labels.Merge(s, set)
+	}
+	b.Object.SetLabels(s)
+	return b
+}
+
+func (b *MetaBuilder) AddLabel(key, value string) *MetaBuilder {
+	l := b.Object.GetLabels()
 	if l == nil {
 		l = labels.Set{}
 	}
-	l[w.Key] = w.Value
-	b.ObjectMeta.SetLabels(l)
+	l[key] = value
+	b.Object.SetLabels(l)
+	return b
 }
-func (w WithLabels) Apply(b *MetaBuilder) {
-	b.ObjectMeta.SetLabels(w)
+
+func (b *MetaBuilder) AddLabels(set labels.Set) *MetaBuilder {
+	l := b.Object.GetLabels()
+	if l == nil {
+		l = labels.Set{}
+	}
+	b.Object.SetLabels(labels.Merge(l, set))
+	return b
 }
